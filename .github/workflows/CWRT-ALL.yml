@@ -1,0 +1,80 @@
+#CI项目
+name: CWRT-ALL
+
+#CI计划
+on:
+  #自动编译：早上6点
+  schedule:
+    - cron: 0 22 * * 0
+  #手动编译
+  workflow_dispatch:
+    inputs:
+      PACKAGE:
+        description: '手动调整插件包，多个请用\n符号隔开。'
+        required: false
+        type: string
+      TEST:
+        description: '仅输出配置文件，不编译固件。'
+        default: 'false'
+        required: false
+        type: boolean
+
+env:
+  GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+
+#CI权限
+permissions: write-all
+
+#CI任务
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete old Releases and Workflows
+        uses: ophub/delete-releases-workflows@main
+        with:
+          gh_token: ${{secrets.GITHUB_TOKEN}}
+          delete_releases: true
+          releases_keep_latest: 5
+          delete_tags: true
+          delete_workflows: true
+          workflows_keep_day: 5
+
+  config:
+    needs: cleanup
+    name: ${{matrix.CONFIG}}
+    strategy:
+      fail-fast: false
+      #max-parallel: 4
+      matrix:
+        CONFIG: [Airpi-modem, Airpi-qmodem]
+        REPO_INFO:
+          - {SOURCE: "padavanonly/immortalwrt-mt798x-6.6", BRANCH: "openwrt-24.10-6.6"}
+
+    #调用公用编译核心WRT-CORE.yml
+    uses: ./.github/workflows/WRT-CORE.yml
+    with:
+      #编译配置
+      WRT_CONFIG: ${{matrix.CONFIG}}
+      #默认主题
+      WRT_THEME: argon
+      #默认主机名
+      WRT_NAME: Airpi
+      #默认WIFI名称
+      WRT_SSID: Airpi
+      #默认WIFI密码
+      WRT_WORD: 1234567890
+      #默认地址
+      WRT_IP: 192.168.88.1
+      #默认密码，仅作提示，修改无用
+      WRT_PW: 无
+      #源码链接
+      WRT_REPO: https://github.com/${{matrix.REPO_INFO.SOURCE}}.git
+      #源码分支
+      WRT_BRANCH: ${{matrix.REPO_INFO.BRANCH}}
+      #源码名称
+      WRT_SOURCE: ${{matrix.REPO_INFO.SOURCE}}
+      #插件调整
+      WRT_PACKAGE: ${{inputs.PACKAGE}}
+      #仅输出配置文件
+      WRT_TEST: ${{inputs.TEST}}

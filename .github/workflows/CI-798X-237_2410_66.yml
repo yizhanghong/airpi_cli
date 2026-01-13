@@ -1,0 +1,361 @@
+name: CI-798X-237_2410_66
+
+# CI计划
+on:
+  # 手动编译
+  workflow_dispatch:
+    inputs:
+      EEPROM:
+        description: 'eeprom文件 and MAC'  #off不使用高功率eeprom
+        required: true
+        default: '360t7_eeprom' 
+        type: choice
+        options: [360t7_eeprom, nx30pro_eeprom, off_false]
+      USB_EMMC:
+        description: 'NAND_USB_EMMC机型'
+        default: 'EMMC_USB'
+        required: true
+        type: choice
+        options: [NAND, NAND_USB, EMMC, EMMC_USB]
+      NAND_MB:
+        description: 'NAND闪存容量MB，UBI大小'
+        default: '关闭'
+        required: true
+        type: choice
+        options: ['关闭', '230', '234.5', '238', '474', '490']
+      WIFI:
+        description: '修改默认WIFI名称'
+        required: true
+        default: 'Mediatek'
+      IPK:
+        description: '调整IPK插件布局'
+        required: true
+        default: true
+        type: boolean
+      DOCKER:
+        description: '添加 docker容器'
+        required: true
+        default: false
+        type: boolean
+      PACKAGE:
+        description: '添加插件'
+        required: false
+        type: string
+      TEST:
+        description: '仅输出配置文件，不编译固件'
+        default: 'false'
+        required: true
+        type: boolean
+
+# CI权限
+permissions: write-all
+
+# CI任务
+jobs:
+  wrt_core:
+    name: MTK-7981
+    runs-on: ubuntu-22.04
+    env:
+      GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+      WRT_TARGET: MTK-7981
+      WRT_THEME: argon
+      WRT_NAME: Immortalwrt
+      WRT_WIFI: ${{inputs.WIFI}}
+      WRT_IP: 192.168.2.1
+      WRT_PW: 无
+      WRT_REPO: https://github.com/padavanonly/immortalwrt-mt798x-24.10.git
+      WRT_BRANCH: openwrt-24.10-6.6
+      WRT_PACKAGE: ${{inputs.PACKAGE}}
+      WRT_TEST: ${{inputs.TEST}}
+      USE_IPK: ${{inputs.IPK}}
+      USE_EEPROM: ${{inputs.EEPROM}}
+      USE_DOCKER: ${{inputs.DOCKER}}
+      WRT_USB_EMMC: ${{inputs.USB_EMMC}}
+      WRT_NAND_MB: ${{inputs.NAND_MB}}
+      WRT_Repositories: 798xWRT_data
+      PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+
+    steps:
+      - name: 检出项目代码
+        uses: actions/checkout@main
+
+      - name: 初始化环境
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          echo "令牌  $PRIVATE_REPO_TOKEN"
+          sudo -E apt -yqq update
+          sudo -E apt -yqq full-upgrade
+          sudo -E apt -yqq autoremove --purge
+          sudo -E apt -yqq autoclean
+          sudo -E apt -yqq clean
+          sudo -E apt -yqq install dos2unix libfuse-dev
+          sudo -E apt -yqq install clang-15 llvm-15 npm
+          sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+          sudo -E systemctl daemon-reload
+          sudo -E timedatectl set-timezone "Asia/Shanghai"
+
+          sudo mkdir -p /mnt/build_wrt
+          sudo chown $USER:$USER /mnt/build_wrt
+          sudo ln -s /mnt/build_wrt $GITHUB_WORKSPACE/wrt
+          
+      - name: 初始化值
+        run: |
+          export WRT_DATE=$(TZ=UTC-8 date +"%y.%m.%d_%H.%M.%S")
+          export WRT_CI=$(basename $GITHUB_WORKSPACE)
+          export WRT_VER=$(echo $WRT_REPO | cut -d '/' -f 4)-$WRT_BRANCH
+          export WRT_TYPE=$(sed -n "1{s/^#//;s/\r$//;p;q}" $GITHUB_WORKSPACE/Config/all/7981_usb.config)
+
+          echo "WRT_DATE=$WRT_DATE" >> $GITHUB_ENV
+          echo "WRT_CI=$WRT_CI" >> $GITHUB_ENV
+          echo "WRT_VER=$WRT_VER" >> $GITHUB_ENV
+          echo "WRT_TYPE=$WRT_TYPE" >> $GITHUB_ENV
+
+      - name: 克隆代码
+        run: |          
+          git clone --depth=1 --single-branch "https://$PRIVATE_REPO_TOKEN@github.com/dsadaskwq/$WRT_Repositories.git"
+          ls 
+          shopt -s dotglob
+          cp -r "$WRT_Repositories"/[!.]* .
+          shopt -u dotglob
+          
+          git clone --depth=1 --single-branch --branch $WRT_BRANCH $WRT_REPO ./wrt/
+
+          cd ./wrt/ && echo "WRT_HASH=$(git log -1 --pretty=format:'%h')" >> $GITHUB_ENV
+
+          # 如果不存在 defconfig 则直接结束工作流
+          if [ ! -d "defconfig" ]; then
+            echo "defconfig directory not found, stopping workflow."
+            exit 0
+          fi
+
+          # GitHub Action 移除国内下载源
+          PROJECT_MIRRORS_FILE="./scripts/projectsmirrors.json"
+          if [ -f "$PROJECT_MIRRORS_FILE" ]; then
+            sed -i '/.cn\//d; /tencent/d; /aliyun/d' "$PROJECT_MIRRORS_FILE"
+          fi
+
+      - name: 检查脚本
+        run: |
+          find ./ -maxdepth 3 -type f -iregex ".*\(txt\|sh\)$" -exec dos2unix {} \; -exec chmod +x {} \;
+
+      - name: 检查缓存
+        id: check-cache
+        if: env.WRT_TEST != 'true'
+        uses: actions/cache@main
+        with:
+          key: ${{env.WRT_CONFIG}}-${{env.WRT_VER}}-${{env.WRT_HASH}}
+          restore-keys: ${{env.WRT_CONFIG}}-${{env.WRT_VER}}
+          path: |
+            ./wrt/.ccache
+            ./wrt/staging_dir/host*
+            ./wrt/staging_dir/tool*
+
+      - name: Update Caches
+        if: env.WRT_TEST != 'true'
+        run: |
+          if [ -d "./wrt/staging_dir" ]; then
+            find "./wrt/staging_dir" -type d -name "stamp" -not -path "*target*" | while read -r DIR; do
+              find "$DIR" -type f -exec touch {} +
+            done
+
+            mkdir -p ./wrt/tmp && echo "1" > ./wrt/tmp/.build
+
+            echo "工具链跳过完成!"
+          else
+            echo "缓存清理完成!"
+          fi
+
+          if ${{steps.check-cache.outputs.cache-hit != 'true'}}; then
+            CACHE_LIST=$(gh cache list --key "$WRT_CONFIG-$WRT_VER" | cut -f 1)
+            for CACHE_KEY in $CACHE_LIST; do
+              gh cache delete $CACHE_KEY
+            done
+
+            echo "caches cleanup done!"
+          fi
+
+      - name: 更新Feeds
+        run: |
+          cd ./wrt/
+          # 选择补丁或者操作
+          echo "准备添加补丁"
+          if [[ $WRT_USB_EMMC == "EMMC_USB" ]] ; then   
+              #cp $GITHUB_WORKSPACE/Config/MTK_7981/umi_3000e/237-2410-66-umi_3000e-emmc.diff 237-2410-66-3000e.diff
+              #git apply --whitespace=fix 237-2410-66-3000e.diff
+              echo "EMMC_USB  3000e系列"
+          elif [[ $WRT_USB_EMMC == "EMMC" ]] ; then
+              cp $GITHUB_WORKSPACE/Config/all/h24.10-add-hy3000.diff h24.10-add-hy3000.diff
+              git apply h24.10-add-hy3000.diff
+              echo "EMMC hy3000补丁！"
+          elif [[ $WRT_USB_EMMC == "NAND" ]] ; then
+              cp $GITHUB_WORKSPACE/Config/2410_66/filogic.mk target/linux/mediatek/image/filogic.mk
+              cp $GITHUB_WORKSPACE/Config/2410_66/02_network target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+              
+              cp $GITHUB_WORKSPACE/Config/2410_66/mt7981b-konka-komi-a31.dts target/linux/mediatek/dts/mt7981b-konka-komi-a31.dts
+              echo "NAND komi_a31补丁！"
+          fi
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a          
+          
+
+      - name: 自定义包
+        run: |
+          cd ./wrt/package/
+
+          #$GITHUB_WORKSPACE/Scripts/Packages.sh
+          $GITHUB_WORKSPACE/Scripts/Packages24.sh
+          $GITHUB_WORKSPACE/Scripts/Handles.sh
+
+      - name: 自定义设置
+        run: |
+          cd ./wrt/
+          rm -rf ./tmp* ./.config*
+          cp -f defconfig/mt7981-ax3000.config .config
+          sed -i '/^CONFIG_TARGET_DEVICE_PACKAGES_mediatek_mt7981_DEVICE/d' .config
+          sed -i '/^CONFIG_TARGET_DEVICE_PACKAGES_mediatek_mt7981_DEVICE/d' .config
+
+          if [[ $WRT_USB_EMMC == "EMMC_USB" ]] ; then
+            cat $GITHUB_WORKSPACE/Config/MTK_7981/EMMC_USB.config >> .config
+            echo "使用EMMC_USB umi3000e配置文件"
+          elif [[ $WRT_USB_EMMC == "NAND_USB" ]] ; then
+            cat $GITHUB_WORKSPACE/Config/MTK_7981/NAND_USB.config >> .config
+            echo "使用NAND_USB xr30配置文件"
+          elif [[ $WRT_USB_EMMC == "EMMC" ]] ; then
+            cat $GITHUB_WORKSPACE/Config/MTK_7981/EMMC.config >> .config
+            echo "使用EMMC sl_3000_emmc配置文件"
+          elif [[ $WRT_USB_EMMC == "NAND" ]] ; then
+            cat $GITHUB_WORKSPACE/Config/MTK_7981/NAND.config >> .config
+            echo "使用NAND 360t7配置文件"
+          fi
+
+          $GITHUB_WORKSPACE/Scripts/Settings.sh
+
+          # 设置 dockerman 容器
+          if [[ $USE_DOCKER == "true" ]] ; then
+            echo -e "\nCONFIG_PACKAGE_luci-app-dockerman=y" >> .config
+          fi
+
+          # 修改插件位置
+          if [[ $USE_IPK == "true" ]] ; then
+            # 部分插件调整到status 状态
+            sed -i 's/services/status/g' ./package/feeds/luci/luci-app-nlbwmon/root/usr/share/luci/menu.d/luci-app-nlbwmon.json  || true
+            #sed -i 's/network/status/g' ./package/mtk/applications/luci-app-wrtbwmon/root/usr/share/luci/menu.d/luci-app-wrtbwmon.json  || true
+            # 部分插件调整到nas 网络储存
+            sed -i 's/services/nas/g' ./package/luci-app-aliyundrive-webdav/luasrc/controller/*.lua  || true
+            sed -i 's/services/nas/g' ./package/luci-app-aliyundrive-webdav/luasrc/view/aliyundrive-webdav/*.htm  || true
+            sed -i 's/services/nas/g' ./package/luci-app-wolplus/luasrc/controller/*.lua  || true
+            sed -i 's/services/nas/g' ./package/luci-app-wolplus/luasrc/view/wolplus/*.htm  || true
+            sed -i 's/services/nas/g' ./package/feeds/luci/luci-app-wol/root/usr/share/luci/menu.d/luci-app-wol.json  || true
+            sed -i 's/services/nas/g' ./package/feeds/luci/luci-app-ksmbd/root/usr/share/luci/menu.d/luci-app-ksmbd.json  || true
+            sed -i 's/services/nas/g' ./package/feeds/luci/luci-app-qbittorrent/root/usr/share/luci/menu.d/luci-app-qbittorrent.json  || true
+            # 部分插件调整到vpn
+            sed -i 's/services/vpn/g' ./package/feeds/luci/luci-app-uugamebooster/luasrc/controller/*.lua  || true
+            sed -i 's/services/vpn/g' ./package/feeds/luci/luci-app-uugamebooster/luasrc/view/uugamebooster/*.htm  || true
+            sed -i 's/services/vpn/g' ./package/luci-app-tailscale/root/usr/share/luci/menu.d/luci-app-tailscale.json  || true
+            # 部分插件调整到network 网络
+            sed -i 's/services/network/g' ./package/mtk/applications/luci-app-eqos-mtk/root/usr/share/luci/menu.d/luci-app-eqos.json  || true
+            echo "修改插件位置!"
+          fi
+
+          # 手动调整的插件
+          if [ -n "$WRT_PACKAGE" ]; then
+            echo -e "$WRT_PACKAGE" >> ./.config
+          fi
+
+          # 修改NAND容量
+          if [[ $WRT_NAND_MB != "关闭" ]]; then
+            echo "WRT_NAND_MB=$WRT_NAND_MB，开始动态计算..."
+
+            # 转换为字节数（十六进制地址）
+            BYTES=$(awk -v mb="$WRT_NAND_MB" 'BEGIN { printf "%.0f", mb * 1024 * 1024 }')
+            HEX_SIZE=$(printf "0x%x" "$BYTES")
+
+            echo "已计算：$WRT_NAND_MB MB = 十六进制 $HEX_SIZE"
+
+            # 替换 DTS 中 reg 字段为WRT_NAND_MB
+            for DTS in \
+              target/linux/mediatek/dts/mt7981b-cmcc-rax3000m.dts \
+              target/linux/mediatek/dts/mt7981b-konka-komi-a31.dts; do
+              sed -i "s@reg = <0x580000 [^>]*>@reg = <0x580000 $HEX_SIZE>@g" "$DTS"
+            done
+            echo "动态修改完成：reg = <0x580000 $HEX_SIZE>"
+          else
+            echo "WRT_NAND_MB=关闭，不修改 reg 地址"
+          fi
+
+          # CPU 使用率 显示硬件加速PPE
+          cp $GITHUB_WORKSPACE/Config/all/js/24/10_system.js ./feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js
+          # 24.10添加网口信息
+          #sed -i 's/ifeq ($(filter ipq% mediatek%,/ifeq ($(filter ipq%,/' package/emortal/autocore/Makefile
+          #cp $GITHUB_WORKSPACE/Config/all/js/21_ethinfo.js ./package/emortal/autocore/files/generic/21_ethinfo.js
+
+          make defconfig -j$(nproc) && make clean -j$(nproc)
+
+      - name: 下载文件
+        if: env.WRT_TEST != 'true'
+        run: |
+          cd ./wrt/
+
+          make download -j$(nproc)
+
+      - name: 编译固件
+        if: env.WRT_TEST != 'true'
+        run: |
+          cd ./wrt/
+
+          make -j$(nproc) || make -j1 V=s
+
+      - name: 机器信息
+        run: |
+          cd ./wrt/
+
+          echo "======================="
+          lscpu | grep -E "name|Core|Thread"
+          echo "======================="
+          df -h
+          echo "======================="
+          du -h --max-depth=1
+          echo "======================="          
+
+      - name: 打包固件
+        run: |
+          cd ./wrt/ && mkdir ./upload/
+
+          cp -f ./.config ./upload/Config_"$WRT_TARGET"_"$WRT_VER"_"$WRT_DATE".txt
+
+          if [[ $WRT_TEST != 'true' ]]; then
+            find ./bin/targets/ -iregex ".*\(buildinfo\|json\|manifest\|sha256sums\|packages\)$" -exec rm -rf {} +
+
+            for TYPE in $WRT_TYPE ; do
+              for FILE in $(find ./bin/targets/ -type f -iname "*$TYPE*.*") ; do
+                EXT=$(basename $FILE | cut -d '.' -f 2-)
+                NAME=$(basename $FILE | cut -d '.' -f 1 | grep -io "\($TYPE\).*")
+                NEW_FILE="$WRT_VER"_"$NAME"_"$WRT_DATE"."$EXT"
+                mv -f $FILE ./upload/$NEW_FILE
+              done
+            done
+
+            find ./bin/targets/ -type f -exec mv -f {} ./upload/ \;
+          fi
+
+          ls ./upload/
+
+      - name: 发布固件
+        uses: softprops/action-gh-release@master
+        with:
+          tag_name: ${{env.WRT_TARGET}}_${{env.WRT_VER}}_${{env.WRT_DATE}}
+          files: ./wrt/upload/*.*
+          body: |
+            源码：${{env.WRT_REPO}}            
+            分支：${{env.WRT_BRANCH}}
+            平台：${{env.WRT_TARGET}}
+            设备：${{env.WRT_TYPE}}
+            地址：${{env.WRT_IP}}
+            密码：${{env.WRT_PW}}
+            USB_EMMC：${{inputs.USB_EMMC}}  
+            添加插件: ${{env.WRT_PACKAGE}}
+            EEPROM：${{env.USE_EEPROM}}
+            DOCKER: ${{env.USE_DOCKER}}
+            NAND_UBI大小(MB)：${{inputs.NAND_MB}}
+            
