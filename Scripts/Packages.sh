@@ -46,7 +46,10 @@ UPDATE_PACKAGE() {
 
 # UPDATE_PACKAGE "包名" "项目地址" "项目分支" "pkg/name，可选，pkg为从大杂烩中单独提取包名插件；name为重命名为包名"
 UPDATE_PACKAGE "argon" "sbwml/luci-theme-argon" "openwrt-24.10"
-UPDATE_PACKAGE "kucat" "sirpdboy/luci-theme-kucat" "js"
+UPDATE_PACKAGE "aurora" "eamonxg/luci-theme-aurora" "master"
+UPDATE_PACKAGE "aurora-config" "eamonxg/luci-app-aurora-config" "master"
+UPDATE_PACKAGE "kucat" "sirpdboy/luci-theme-kucat" "master"
+UPDATE_PACKAGE "kucat-config" "sirpdboy/luci-app-kucat-config" "master"
 
 UPDATE_PACKAGE "homeproxy" "VIKINGYFY/homeproxy" "main"
 UPDATE_PACKAGE "momo" "nikkinikki-org/OpenWrt-momo" "main"
@@ -59,7 +62,11 @@ UPDATE_PACKAGE "luci-app-tailscale" "asvow/luci-app-tailscale" "main"
 
 UPDATE_PACKAGE "nas" "linkease/nas-packages" "master"
 UPDATE_PACKAGE "nas_luci" "linkease/nas-packages-luci" "main"
-UPDATE_PACKAGE "istore" "linkease/istore" "main"
+git clone --depth=1 https://github.com/linkease/istore-ui istore-ui
+git clone --depth=1 https://github.com/linkease/istore istore
+UPDATE_PACKAGE "istorex" "linkease/nas-packages-luci" "main" "pkg"
+UPDATE_PACKAGE "quickstart" "linkease/nas-packages" "master" "pkg"
+UPDATE_PACKAGE "luci-app-quickstart" "linkease/nas-packages-luci" "main" "pkg"
 UPDATE_PACKAGE "ddns-go" "sirpdboy/luci-app-ddns-go" "main"
 UPDATE_PACKAGE "diskman" "lisaac/luci-app-diskman" "master"
 UPDATE_PACKAGE "easytier" "EasyTier/luci-app-easytier" "main"
@@ -72,6 +79,7 @@ UPDATE_PACKAGE "partexp" "sirpdboy/luci-app-partexp" "main"
 UPDATE_PACKAGE "qbittorrent" "sbwml/luci-app-qbittorrent" "master" "" "qt6base qt6tools rblibtorrent"
 UPDATE_PACKAGE "qmodem" "yizhanghong/QModem" "main"
 UPDATE_PACKAGE "quickfile" "sbwml/luci-app-quickfile" "main"
+UPDATE_PACKAGE "open-app-filter" "destan19/OpenAppFilter" "master" "" "luci-app-appfilter oaf"  #应用过滤(OAF)
 UPDATE_PACKAGE "viking" "VIKINGYFY/packages" "main" "" "luci-app-timewol luci-app-wolplus"
 UPDATE_PACKAGE "vnt" "lmq8267/luci-app-vnt" "main"
 

@@ -7,7 +7,7 @@ https://github.com/padavanonly/immortalwrt-mt798x-6.6.git
 
 # 固件说明：
 
-Airpi 5g cpe专用精简版
+Airpi Ap3000m 5g cpe专用精简版
 
 加入Qmodem/modem ttyd HomeProxy Xfrpc等
 
