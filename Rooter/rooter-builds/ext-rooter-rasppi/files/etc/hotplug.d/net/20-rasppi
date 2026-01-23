@@ -1,0 +1,51 @@
+#!/bin/sh
+
+log() {
+	modlog "RASPPI" "$@"
+}
+
+check() {
+	vid=$1
+	pid=$2
+	got=$(echo "$uss" | grep "Vendor=$vid ProdID=$pid")
+	if [ ! -z "$got" ]; then
+		fnd=1
+	fi
+}
+
+if [ "$INTERFACE" = "eth1" ]; then
+	if [ "$ACTION" = "add" ]; then
+		uss=$(cat /sys/kernel/debug/usb/devices)
+		fnd=0
+# kmod-usb-net-rtl8152
+# kmod-usb-net-asix-ax88179
+		check 0b95 1790
+		check 13b1 0041
+		check 2357 0601
+		check 0b95 772b
+		check 0bda 8152
+		if [ $fnd = 1 ]; then
+			wn=$(uci -q get.network.wan)
+			if [ -z "$wn" ]; then
+				log "Create WAN"
+				uci set network.wan=interface
+				uci set network.wan.proto="dhcp"
+				uci set network.wan.device="eth1"
+				uci set network.wan6=interface
+				uci set network.wan6.proto="dhcpv6"
+				uci set network.wan6.device="@wan"
+				uci set network.wan6.reqaddress='try'
+				uci set network.wan6.reqprefix='auto'
+				uci commit network
+				/etc/init.d/network restart
+			fi
+		fi
+	fi
+	if [ "$ACTION" = "remove" ]; then
+		log "Remove WAN"
+		uci delete network.wan
+		uci delete network.wan6
+		uci commit network
+		/etc/init.d/network restart
+	fi
+fi

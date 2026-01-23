@@ -1,0 +1,21 @@
+#!/bin/sh
+# 
+# /etc/hotplug.d/iface/19-rooter
+#
+
+log() {
+	modlog "MHI" "$@"
+}
+
+if [ $ACTION = "add" -a ${INTERFACE} = "mhi_hwip0" ]; then
+	if [ ! -e /tmp/gotpcie1 ]; then
+		/usr/lib/rooter/mhi/create-pci.sh &
+	fi
+fi
+if [ $ACTION = "add" -a ${INTERFACE} = "wwan0" ]; then
+	if [ -e /dev/wwan0mbim0 ]; then
+		if [ ! -e /tmp/gotpcie1 ]; then
+			/usr/lib/rooter/mhi/create-pci.sh &
+		fi
+	fi
+fi 

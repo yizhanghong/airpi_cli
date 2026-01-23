@@ -1,0 +1,505 @@
+#!/bin/sh
+ 
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (C) 2013-2016 Aleksander Morgado <aleksander@aleksander.es>
+#
+# Based on libqmi's qmi-network script
+#
+
+ROOTER=/usr/lib/rooter
+ROOTER_LINK="/tmp/links"
+
+log() {
+	modlog "Create Network $CURRMODEM" "$@"
+}
+
+# Defaults
+PROFILE_FILE=/etc/mbim-network.conf
+
+DEVICE=$1
+COMMAND=$2
+
+STATE_FILE=/tmp/mbim-network-state-`basename $DEVICE`
+
+setip() {
+	ipv4_addresses=
+	ipv4_gateway=""
+	ipv4_dns1=
+	ipv4_dns2=
+	ipv6_addresses=
+	ipv6_gateway=""
+	ipv6_dns2=
+	log "Requesting IPv4 and IPv6 information"
+	IPDATA=$(mbimcli -d $DEVICE -p --query-ip-configuration=0)
+	echo "$IPDATA" > /tmp/ipdata
+	while read -r line || [[ -n "$line" ]] ; do
+		[ -z "$line" ] && continue
+		case "$line" in
+			*"IPv4 configuration available: 'none'"*)
+					state="start"
+					continue
+				;;
+			*"IPv4 configuration available"*)
+				state="ipv4"
+				continue
+				;;
+			*"IPv6 configuration available: 'none'"*)
+					state="start"
+					continue
+				;;
+			*"IPv6 configuration available"*)
+				state="ipv6"
+				continue
+				;;
+			*)
+				;;
+		esac
+		case "$state" in
+			"ipv4")
+
+				case "$line" in
+				*"IP"*)
+					row=$(echo "$line" | xargs | tr " " "," | cut -d, -f3 | tr "/" "," | cut -d, -f1)
+					ipv4_addresses="$row"
+						continue
+					;;
+				*"Gateway"*)
+					row=$(echo "$line" | xargs | tr " " "," | cut -d, -f2)
+					ipv4_gateway="$row"
+					continue
+					;;
+				*"DNS [0]"*)
+					row=$(echo "$line" | xargs | tr " " "," | cut -d, -f3)
+					ipv4_dns1="$row"
+					continue
+					;;
+				*"DNS [1]"*)
+					row=$(echo "$line" | xargs | tr " " "," | cut -d, -f3)
+					ipv4_dns2="$row"
+					continue
+					;;
+				*)
+					;;
+				esac
+				;;
+
+			"ipv6")
+				case "$line" in
+				*"IP"*)
+					row=$(echo "$line" | xargs | tr " " "," | cut -d, -f3 | tr "/" "," | cut -d, -f1)
+					ipv6_addresses="$row"
+						continue
+					;;
+				*"Gateway"*)
+					row=$(echo "$line" | xargs | tr " " "," | cut -d, -f2)
+					ipv6_gateway="$row"
+					continue
+					;;
+				*"DNS [0]"*)
+					row=$(echo "$line" | xargs | tr " " "," | cut -d, -f3)
+					ipv6_dns1="$row"
+					continue
+					;;
+				*"DNS [1]"*)
+					row=$(echo "$line" | xargs | tr " " "," | cut -d, -f3)
+					ipv6_dns2="$row"
+					continue
+					;;
+				*)
+					continue
+					;;
+				esac
+			;;
+		*)
+			continue
+		;;
+		esac
+	done < /tmp/ipdata
+
+	log "$ipv4_addresses"
+	log "$ipv4_gateway"
+	log "$ipv4_dns1 $ipv4_dns2"
+	log "$ipv6_addresses"
+	log "$ipv6_gateway"
+	log "$ipv6_dns1 $ipv6_dns2"
+	
+	if [ ! -z "$ipv6_addresses" ]; then
+		vs=6
+		ipaddrf=$ipv6_addresses
+		gatewayf=$ipv6_gateway
+		dns1f=$ipv6_dns1
+		dns2f=$ipv6_dns2
+	else
+		vs=4
+		ipaddrf=$ipv4_addresses
+		gatewayf=$ipv4_gateway
+		dns1f=$ipv4_dns1
+		dns2f=$ipv4_dns2
+	fi
+	
+	INTER=1
+	IFNAME="mhi_hwip0"
+	CURRMODEM=1
+	
+	log "Applying IP settings to wan$INTER"
+
+	if [ "$vs" = "6" ]; then
+		log "Add 464xlat interface"
+		uci delete network.xlatd$INTER
+		uci set network.xlatd$INTER=interface
+		uci set network.xlatd$INTER.proto='464xlat'
+		uci set network.xlatd$INTER.tunlink='wan'$INTER
+		uci set network.xlatd$INTER.ip6prefix='64:ff9b::/96'
+		uci set network.xlatd$INTER.dns='1.1.1.1'
+		uci set network.xlatd$INTER.metric=$INTER"0"
+		uci set network.xlatd$INTER.ip4table='default'
+		uci set network.xlatd$INTER.ip6table='default'
+		uci commit network
+		ifup xlatd$INTER
+	fi
+	 
+	uci delete network.wan$INTER
+	uci set network.wan$INTER=interface
+	uci set network.wan$INTER.proto=static
+	uci set network.wan$INTER.device="$IFNAME"
+	uci set network.wan$INTER.metric=$INTER"0"
+	uci add_list network.wan$INTER.dns="$dns1f"
+	if [ ! -z "$dns2f" ]; then
+		uci add_list network.wan$INTER.dns="$dns2f"
+	fi
+	if [ "$vs" = "6" ]; then
+		uci set network.wan$INTER.ip6gw="$gatewayf"
+		uci set network.wan$INTER.ip6addr="$ipaddrf"
+	else
+		uci set network.wan$INTER.ipaddr="$ipaddrf"
+		uci set network.wan$INTER.gateway="$gatewayf"
+	fi
+	uci set network.wan$INTER.peerdns=0
+	uci commit network
+	#ip link set dev $IFNAME arp off
+	ip route add default via $gatewayf dev $IFNAME
+	ip route add default dev $IFNAME
+	ifup wan$INTER
+
+#	ip link set mhi_hwip0 down
+#	ip addr flush dev mhi_hwip0
+#	ip -6 addr flush dev $IFNAME
+#	ip link set mhi_hwip0 up
+#	ip addr add 10.170.92.207 dev mhi_hwip0
+#	ip route add default via 10.170.92.208 dev mhi_hwip0
+#	systemd-resolve -6 --interface=$IFNAME --set-dns=$dns1f
+
+
+	ln -fs $ROOTER/signal/modemsignal.sh $ROOTER_LINK/getsignal$CURRMODEM
+	$ROOTER_LINK/getsignal$CURRMODEM $CURRMODEM $PROT &
+	rm -f /tmp/usbwait
+	log "Modem Connected"
+	if [ -e $ROOTER/modem-led.sh ]; then
+		$ROOTER/modem-led.sh $CURRMODEM 3
+	fi
+
+	uci set modem.modem$CURRMODEM.connected=1
+	uci commit modem
+	ln -fs $ROOTER/connect/conmon.sh $ROOTER_LINK/con_monitor$CURRMODEM
+	$ROOTER_LINK/con_monitor$CURRMODEM $CURRMODEM &
+	if [ -e $ROOTER/connect/postconnect.sh ]; then
+		$ROOTER/connect/postconnect.sh $CURRMODEM
+	fi
+
+}
+
+load_profile ()
+{
+    if [ -f "$PROFILE_FILE" ]; then
+        log "Loading profile at ${PROFILE_FILE}..."
+        . $PROFILE_FILE
+        if [ "$PROXY" = "yes" ]; then
+            PROXY_OPT='--device-open-proxy'
+         fi
+    else
+        log "Profile at '$PROFILE_FILE' not found..."
+    fi
+}
+
+save_state ()
+{
+    KEY=$1
+    VAL=$2
+
+    if [ -n "${PROXY_OPT}" ]; then
+        return
+    fi
+
+    log "Saving state at ${STATE_FILE}... ($KEY: $VAL)"
+
+    if [ -f "$STATE_FILE" ]; then
+        PREVIOUS=`cat $STATE_FILE`
+        PREVIOUS=`echo "$PREVIOUS" | grep -v $KEY`
+        if [ -n "$PREVIOUS" ]; then
+            echo $PREVIOUS > $STATE_FILE
+        else
+            rm $STATE_FILE
+        fi
+    fi
+
+    if [ -n "$VAL" ]; then
+        echo "$KEY=\"$VAL\"" >> $STATE_FILE
+    fi
+}
+
+load_state ()
+{
+    if [ -n "${PROXY_OPT}" ]; then
+        return
+    fi
+
+    if [ -f "$STATE_FILE" ]; then
+        log "Loading previous state from ${STATE_FILE}..."
+        . $STATE_FILE
+        if [ -n "$TRID" ]; then
+            log "    Previous Transaction ID: $TRID"
+        fi
+    fi
+}
+
+clear_state ()
+{
+    if [ -n "${PROXY_OPT}" ]; then
+        return
+    fi
+
+    log "Clearing state at ${STATE_FILE}..."
+    rm -f $STATE_FILE
+}
+
+#
+# $ sudo mbimcli -d /dev/cdc-wdm0 --connect="Internet" --no-close
+#   [/dev/cdc-wdm0] Successfully connected
+#   [/dev/cdc-wdm0] Connection status:
+#             Session ID: '0'
+#       Activation state: 'activated'
+#       Voice call state: 'none'
+#                IP type: 'ipv4'
+#           Context type: 'internet'
+#          Network error: 'unknown'
+#
+connect ()
+{
+    # Always try to connect using a fresh session
+    if [ -z "${PROXY_OPT}" ]; then
+        if [ -n "$TRID" ]; then
+            # This will implicitly close the previous session
+            mbimcli -d $DEVICE --no-open=$TRID
+            clear_state
+        fi
+    fi
+
+    if [ -z "${PROXY_OPT}" ]; then
+        EXTRA_OPT="--no-close"
+    else
+        EXTRA_OPT="${PROXY_OPT}"
+    fi
+
+    SUBSCRIBER_READY_CMD="mbimcli -d $DEVICE --query-subscriber-ready-status ${EXTRA_OPT}"
+    log "Querying subscriber ready status"
+
+    SUBSCRIBER_READY_OUT=`$SUBSCRIBER_READY_CMD`
+
+    if [ -z "${PROXY_OPT}" ]; then
+        TRID=`echo "$SUBSCRIBER_READY_OUT" | sed -n "s/.*TRID.*'\(.*\)'.*/\1/p"`
+        EXTRA_OPT="--no-open=$TRID --no-close"
+    else
+        EXTRA_OPT="${PROXY_OPT}"
+    fi
+
+    REGISTRATION_STATE_CMD="mbimcli -d $DEVICE --query-registration-state ${EXTRA_OPT}"
+    log "Querying registration state"
+
+    REGISTRATION_STATE_OUT=`$REGISTRATION_STATE_CMD`
+	log "$REGISTRATION_STATE_OUT"
+	reg=$(echo "$REGISTRATION_STATE_OUT" | grep "deregistered")
+	if [ -z "$REGISTRATION_STATE_OUT" ]; then
+		success="0"
+		#log "$REGISTRATION_STATE_OUT"
+		log "Registration failed"
+		return
+	fi
+	if [ ! -z "$reg" ]; then
+		success="0"
+		#log "$REGISTRATION_STATE_OUT"
+		log "Registration failed"
+		return
+	fi
+
+    if [ -z "${PROXY_OPT}" ]; then
+        TRID=`echo "$REGISTRATION_STATE_OUT" | sed -n "s/.*TRID.*'\(.*\)'.*/\1/p"`
+        EXTRA_OPT="--no-open=$TRID --no-close"
+    else
+        EXTRA_OPT="${PROXY_OPT}"
+    fi
+
+    ATTACH_CMD="mbimcli -d $DEVICE --attach-packet-service ${EXTRA_OPT}"
+    log "Attaching to packet service"
+
+    ATTACH_OUT=`$ATTACH_CMD`
+	att=$(echo "$ATTACH_OUT" | grep "attached")
+	if [ -z "$att" ]; then
+		success="0"
+	    log "$ATTACH_OUT"
+		log "Packet Attach Failed"
+		return
+	fi
+
+    if [ -z "${PROXY_OPT}" ]; then
+        TRID=`echo "$ATTACH_OUT" | sed -n "s/.*TRID.*'\(.*\)'.*/\1/p"`
+        EXTRA_OPT="--no-open=$TRID --no-close"
+    else
+        EXTRA_OPT="${PROXY_OPT}"
+    fi
+
+    CONNECT_ARGS="apn='$APN',ip-type='ipv4v6'"
+    if [ -n "$APN_AUTH" ]; then
+        CONNECT_ARGS="${CONNECT_ARGS},auth='$APN_AUTH'"
+        if [ -n "$APN_USER" ]; then
+            CONNECT_ARGS="${CONNECT_ARGS},username='$APN_USER'"
+            if [ -n "$APN_PASS" ]; then
+                CONNECT_ARGS="${CONNECT_ARGS},password='$APN_PASS'"
+            fi
+        fi
+    fi
+
+    CONNECT_CMD="mbimcli -d $DEVICE --connect=$CONNECT_ARGS ${EXTRA_OPT}"
+    log "Starting network"
+
+    CONNECT_OUT=`$CONNECT_CMD`
+    if [ $? -eq 0 ]; then
+        log "Network started successfully"
+		success="1"
+    else
+        log "Network start failed"
+ 		success="0"
+		return
+    fi
+
+    # Save the new TRID
+    if [ -z "${PROXY_OPT}" ]; then
+        TRID=`echo "$CONNECT_OUT" | sed -n "s/.*TRID.*'\(.*\)'.*/\1/p"`
+        if [ -n "$TRID" ]; then
+            save_state "TRID" $TRID
+        fi
+    fi
+}
+
+#
+# $ sudo mbimcli -d /dev/cdc-wdm0 --disconnect="0"
+#   [/dev/cdc-wdm0] Successfully disconnected
+#   [/dev/cdc-wdm0] Connection status:
+#             Session ID: '0'
+#       Activation state: 'deactivated'
+#       Voice call state: 'none'
+#                IP type: 'default'
+#           Context type: 'internet'
+#          Network error: 'unknown'
+#
+disconnect ()
+{
+    # Always close the session when disconnecting
+    if [ -n "${PROXY_OPT}" ]; then
+        EXTRA_OPT="${PROXY_OPT}"
+    elif [ -n "$TRID" ]; then
+        EXTRA_OPT="--no-open=$TRID"
+    else
+        EXTRA_OPT=""
+    fi
+    DISCONNECT_CMD="mbimcli -d $DEVICE --disconnect ${EXTRA_OPT}"
+
+    log "Stopping network"
+
+    DISCONNECT_OUT=`$DISCONNECT_CMD`
+    if [ $? -eq 0 ]; then
+        log "Network stopped successfully"
+    else
+        log "Network stop failed"
+        log "$DISCONNECT_OUT"
+    fi
+
+    clear_state
+}
+
+#
+# $ sudo mbimcli -d /dev/cdc-wdm0 --query-connection-state  --no-close
+# [/dev/cdc-wdm0] Connection status:
+#         Session ID: '0'
+#   Activation state: 'deactivated'
+#   Voice call state: 'none'
+#            IP type: 'default'
+#       Context type: 'none'
+#      Network error: 'unknown'
+#
+status ()
+{
+    if [ -n "${PROXY_OPT}" ]; then
+        EXTRA_OPT="${PROXY_OPT}"
+    elif [ -n "$TRID" ]; then
+        EXTRA_OPT="--no-open=$TRID --no-close"
+    else
+        EXTRA_OPT=""
+    fi
+
+    STATUS_CMD="mbimcli -d $DEVICE --query-connection-state ${EXTRA_OPT}"
+    log "Getting status with '$STATUS_CMD'..."
+
+    STATUS_OUT=`$STATUS_CMD`
+
+    # Save the new TRID
+    if [ -z "${PROXY_OPT}" ]; then
+        TRID=`echo "$STATUS_OUT" | sed -n "s/.*TRID.*'\(.*\)'.*/\1/p"`
+        if [ -n "$TRID" ]; then
+            save_state "TRID" $TRID
+        fi
+    fi
+
+    CONN=`echo "$STATUS_OUT" | sed -n "s/.*Activation state:.*'\(.*\)'.*/\1/p"`
+    if [ -z "$CONN" ]; then
+        log "error: couldn't get connection status" 1>&2
+        exit 2
+    else
+        log "Status: $CONN"
+        if [ "$CONN" != "connected" ]; then
+            exit 64
+        fi
+    fi
+}
+
+# Main
+
+# Load profile, if any
+load_profile
+
+# Load previous state, if any
+load_state
+
+# Process commands
+case $COMMAND in
+    "start")
+        connect
+		echo "$success" > /tmp/mbimmhi
+		if [ "$success" = "1" ]; then
+			setip
+		fi
+        ;;
+    "stop")
+        disconnect
+        ;;
+    "status")
+        status
+        ;;
+    *)
+        echo "error: unexpected command '$COMMAND'" 1>&2
+        print_usage
+        exit 255
+        ;;
+esac
+
+exit 0

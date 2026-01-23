@@ -1,0 +1,3 @@
+config ota 'ota'
+	option ip 'home24943540.1and1-data.host'
+	option key 'LS11c2VyIGFjYzEyMDUyMjUyNDI6cmFscGghdGhlIWRhaXJ5bWFuCg=='
