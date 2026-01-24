@@ -179,13 +179,13 @@ jobs:
           if [[ "${WRT_CONFIG,,}" == *"qmodem"* ]]; then
             rm -rf package/mtk/applications/5g-modem
           else
-            rm -rf package/qmodem 
+            rm -rf package/QModem 
             sed -i 's/delsms.svg/delsms.png/g' ./package/mtk/applications/5g-modem/luci-app-sms-tool/luasrc/view/modem/readsms.htm
           fi
 
           if [[ "${WRT_CONFIG,,}" == *"rooter"* ]]; then
             rm -rf package/mtk/applications/5g-modem
-            rm -rf package/qmodem
+            rm -rf package/QModem
             cp -r $GITHUB_WORKSPACE/Rooter ./package
             # 解决ubim uqmi报错
             sed -i "s/LUCI_DEPENDS/#LUCI_DEPENDS/g" feeds/luci/protocols/luci-proto-mbim/Makefile
